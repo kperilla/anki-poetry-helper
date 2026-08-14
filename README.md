@@ -1,0 +1,1 @@
+uv run python poem_anki_deck.py ws-sonnet18.txt --title "Sonnet 18" --author "William Shakespeare"
