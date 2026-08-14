@@ -208,51 +208,55 @@ def build_notes(stanzas, model, deck_name, title, author, n_words, n_ctx_lines):
         )
         notes.append(note)
 
-    # --- Per-line cards: Line Start, Line Completion, Full Line ---
-    for fl in flat:
-        ctx2 = context_before(flat, fl.global_idx, n_ctx_lines)
-        ctx1 = context_before(flat, fl.global_idx, 1)
-
-        # 1. Line Start: front = 2 lines before, back = first N words of THIS line
-        card_type = "Line Start"
-        add_note(
-            card_type,
-            lines_to_html(ctx2),
-            esc(first_n_words(fl.text, n_words)),
-            ("line-start", fl.global_idx),
-        )
-
-        # 2. Line Completion: front = 1 line before + first N words of this line
-        cue = first_n_words(fl.text, n_words)
-        front_parts = []
-        card_type = "Line Completion"
-        if ctx1:
-            front_parts.append(f'<div class="context">{lines_to_html(ctx1)}</div>')
-        else:
-            front_parts.append(f'<div class="context">[{card_type}]<br>[{BEGINNING_MARKER}]</div>')
-        front_parts.append(f"<div>{esc(cue)} …</div>")
-        add_note(
-            card_type,
-            "".join(front_parts),
-            esc(fl.text),
-            ("line-completion", fl.global_idx),
-        )
-
-        # 3. Full Line: front = 2 lines before, back = full line
-        card_type = "Full Line"
-        add_note(
-            card_type,
-            lines_to_html(ctx2),
-            esc(fl.text),
-            ("full-line", fl.global_idx),
-        )
-
-    # --- Per-stanza cards: Stanza Completion, Full Stanza ---
+    # --- Walk stanza by stanza. Within each stanza: for every line emit
+    #     Line Start, Line Completion, Full Line (in that order); once all
+    #     lines in the stanza are done, emit Stanza Completion, then Full
+    #     Stanza for that stanza. Then move to the next stanza. ---
     for s_idx, stanza in enumerate(stanzas):
+        stanza_lines = [fl for fl in flat if fl.stanza_idx == s_idx]
+
+        for fl in stanza_lines:
+            ctx2 = context_before(flat, fl.global_idx, n_ctx_lines)
+            ctx1 = context_before(flat, fl.global_idx, 1)
+
+            # 1. Line Start: front = 2 lines before, back = first N words of THIS line
+            card_type = "Line Start"
+            add_note(
+                card_type,
+                lines_to_html(ctx2),
+                esc(first_n_words(fl.text, n_words)),
+                ("line-start", fl.global_idx),
+            )
+
+            # 2. Line Completion: front = 1 line before + first N words of this line
+            cue = first_n_words(fl.text, n_words)
+            front_parts = []
+            card_type = "Line Completion"
+            if ctx1:
+                front_parts.append(f'<div class="context">{lines_to_html(ctx1)}</div>')
+            else:
+                front_parts.append(f'<div class="context">[{card_type}]<br>[{BEGINNING_MARKER}]</div>')
+            front_parts.append(f"<div>{esc(cue)} …</div>")
+            add_note(
+                card_type,
+                "".join(front_parts),
+                esc(fl.text),
+                ("line-completion", fl.global_idx),
+            )
+
+            # 3. Full Line: front = 2 lines before, back = full line
+            card_type = "Full Line"
+            add_note(
+                card_type,
+                lines_to_html(ctx2),
+                esc(fl.text),
+                ("full-line", fl.global_idx),
+            )
+
+        # --- Now that every line in this stanza has been emitted, add the
+        #     stanza-level cards for this stanza before moving on. ---
         card_type = "Stanza Completion"
-        stanza_start_global = next(
-            fl.global_idx for fl in flat if fl.stanza_idx == s_idx and fl.line_in_stanza == 0
-        )
+        stanza_start_global = stanza_lines[0].global_idx
         line_before = context_before(flat, stanza_start_global, 1)
         two_before = context_before(flat, stanza_start_global, n_ctx_lines)
         stanza_html = lines_to_html(stanza)
@@ -280,7 +284,7 @@ def build_notes(stanzas, model, deck_name, title, author, n_words, n_ctx_lines):
             ("full-stanza", s_idx),
         )
 
-    # --- Full Poem card (exactly one) ---
+    # --- Full Poem card (exactly one, added last after every stanza) ---
     heading = title if title else "this poem"
     by_line = f" by {author}" if author else ""
     card_type = "Full Poem"
