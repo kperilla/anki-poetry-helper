@@ -1,0 +1,33 @@
+# poem_anki_deck.py config file
+#
+# Copy this file (e.g. to "my_poem.toml"), fill in your own values, and run:
+#
+#   uv run python poem_anki_deck.py --config my_poem.toml
+#
+# When --config is given, all settings come from this file and any other
+# command-line options (--title, --author, etc.) are ignored.
+#
+# Only "input" is required. Every other field is optional and falls back to
+# the same default as the equivalent command-line flag.
+
+# Path to a plain-text file with the poem. Lines are separated by single
+# newlines; stanzas are separated by one or more blank lines. (required)
+input = "inputs/ws-sonnet18.txt"
+
+# Poem title, used in deck/card content. (default: "Untitled Poem")
+title = "Sonnet 18"
+
+# Poem author. (default: "")
+author = "William Shakespeare"
+
+# Anki deck name, e.g. "Latin::Poetry::Aeneid". (default: same as title)
+# deck = "Shakespeare::Sonnets"
+
+# Output .apkg path. (default: a slug of the title, e.g. "sonnet_18.apkg")
+# output = "outputs/sonnet_18.apkg"
+
+# Number of leading words used as a memorization cue. (default: 2)
+# words = 2
+
+# Number of lines of preceding context shown on cards. (default: 2)
+# context_lines = 2

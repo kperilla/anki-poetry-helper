@@ -52,7 +52,9 @@ import argparse
 import html
 import random
 import sys
+import tomllib
 from dataclasses import dataclass, field
+from typing import Callable, List, Tuple
 
 import genanki
 
@@ -191,110 +193,178 @@ def stable_guid(*parts):
 # --------------------------------------------------------------------------
 # Card generation
 # --------------------------------------------------------------------------
+#
+# Each card type is a small, self-contained builder registered in one of the
+# lists below. build_notes() just walks the poem and, at each granularity
+# (line / stanza / poem), runs every builder registered for that granularity.
+# To add a new card type: write a builder function and append a CardSpec for
+# it to the relevant list -- no changes to build_notes() are needed.
+
+@dataclass
+class LineContext:
+    fl: "FlatLine"
+    ctx1: List[str]  # 1 line of context immediately before this line
+    ctx2: List[str]  # n_ctx_lines of context immediately before this line
+    n_words: int
+
+
+@dataclass
+class StanzaContext:
+    s_idx: int
+    stanza: List[str]
+    line_before: List[str]  # 1 line of context before the stanza
+    two_before: List[str]   # n_ctx_lines of context before the stanza
+
+
+@dataclass
+class PoemContext:
+    stanzas: List[List[str]]
+    title: str
+    author: str
+
+
+# A builder takes its context object and returns (front_html, back_html, guid_key).
+CardBuilder = Callable[[object], Tuple[str, str, tuple]]
+
+
+@dataclass(frozen=True)
+class CardSpec:
+    name: str
+    build: CardBuilder
+
+
+def _line_start(ctx: LineContext) -> Tuple[str, str, tuple]:
+    """front = context before, back = first N words of this line."""
+    return (
+        lines_to_html(ctx.ctx2),
+        esc(first_n_words(ctx.fl.text, ctx.n_words)),
+        ("line-start", ctx.fl.global_idx),
+    )
+
+
+def _line_completion(ctx: LineContext) -> Tuple[str, str, tuple]:
+    """front = 1 line before + first N words of this line, back = full line."""
+    cue = first_n_words(ctx.fl.text, ctx.n_words)
+    front_parts = []
+    if ctx.ctx1:
+        front_parts.append(f'<div class="context">{lines_to_html(ctx.ctx1)}</div>')
+    else:
+        front_parts.append(f'<div class="context">[Line Completion]<br>[{BEGINNING_MARKER}]</div>')
+    front_parts.append(f"<div>{esc(cue)} …</div>")
+    return (
+        "".join(front_parts),
+        esc(ctx.fl.text),
+        ("line-completion", ctx.fl.global_idx),
+    )
+
+
+def _full_line(ctx: LineContext) -> Tuple[str, str, tuple]:
+    """front = context before, back = full line."""
+    return (
+        lines_to_html(ctx.ctx2),
+        esc(ctx.fl.text),
+        ("full-line", ctx.fl.global_idx),
+    )
+
+
+LINE_CARD_SPECS = [
+    CardSpec("Line Start", _line_start),
+    CardSpec("Line Completion", _line_completion),
+    CardSpec("Full Line", _full_line),
+]
+
+
+def _stanza_completion(ctx: StanzaContext) -> Tuple[str, str, tuple]:
+    """front = line before stanza + first line of stanza, back = full stanza."""
+    front_parts = []
+    if ctx.line_before:
+        front_parts.append(f'<div class="context">{lines_to_html(ctx.line_before)}</div>')
+    else:
+        front_parts.append(f'<div class="context"><i>{BEGINNING_MARKER}</i></div>')
+    front_parts.append(f"<br><div>{esc(ctx.stanza[0])}</div>...")
+    return (
+        "".join(front_parts),
+        lines_to_html(ctx.stanza),
+        ("stanza-completion", ctx.s_idx),
+    )
+
+
+def _full_stanza(ctx: StanzaContext) -> Tuple[str, str, tuple]:
+    """front = context before stanza, back = full stanza."""
+    return (
+        lines_to_html(ctx.two_before) + "<br>...",
+        lines_to_html(ctx.stanza),
+        ("full-stanza", ctx.s_idx),
+    )
+
+
+STANZA_CARD_SPECS = [
+    CardSpec("Stanza Completion", _stanza_completion),
+    CardSpec("Full Stanza", _full_stanza),
+]
+
+
+def _full_poem(ctx: PoemContext) -> Tuple[str, str, tuple]:
+    """front = 'recite the poem' prompt, back = full poem text."""
+    heading = ctx.title if ctx.title else "this poem"
+    by_line = f" by {ctx.author}" if ctx.author else ""
+    full_text_html = "<br><br>".join(lines_to_html(stanza) for stanza in ctx.stanzas)
+    return (
+        f"Recite <b>{esc(heading)}</b>{esc(by_line)} in full.",
+        full_text_html,
+        ("full-poem",),
+    )
+
+
+POEM_CARD_SPECS = [
+    CardSpec("Full Poem", _full_poem),
+]
+
 
 def build_notes(stanzas, model, deck_name, title, author, n_words, n_ctx_lines):
     flat = flatten(stanzas)
     notes = []
 
-    def add_note(card_type, front_html, back_html, guid_key, extra_tags=None):
-        tags = ["poem-deck", card_type.lower().replace(" ", "-")]
-        if extra_tags:
-            tags.extend(extra_tags)
-        note = genanki.Note(
+    def add_note(spec: CardSpec, ctx) -> None:
+        front_html, back_html, guid_key = spec.build(ctx)
+        tags = ["poem-deck", spec.name.lower().replace(" ", "-")]
+        notes.append(genanki.Note(
             model=model,
-            fields=[card_type, front_html, back_html],
+            fields=[spec.name, front_html, back_html],
             tags=tags,
             guid=stable_guid(deck_name, title, guid_key),
-        )
-        notes.append(note)
+        ))
 
-    # --- Walk stanza by stanza. Within each stanza: for every line emit
-    #     Line Start, Line Completion, Full Line (in that order); once all
-    #     lines in the stanza are done, emit Stanza Completion, then Full
-    #     Stanza for that stanza. Then move to the next stanza. ---
+    # --- Walk stanza by stanza. Within each stanza: run every line-level
+    #     card builder for each line (in registration order), then every
+    #     stanza-level builder once the stanza's lines are done. Finally run
+    #     the poem-level builders once, after every stanza. ---
     for s_idx, stanza in enumerate(stanzas):
         stanza_lines = [fl for fl in flat if fl.stanza_idx == s_idx]
 
         for fl in stanza_lines:
-            ctx2 = context_before(flat, fl.global_idx, n_ctx_lines)
-            ctx1 = context_before(flat, fl.global_idx, 1)
-
-            # 1. Line Start: front = 2 lines before, back = first N words of THIS line
-            card_type = "Line Start"
-            add_note(
-                card_type,
-                lines_to_html(ctx2),
-                esc(first_n_words(fl.text, n_words)),
-                ("line-start", fl.global_idx),
+            line_ctx = LineContext(
+                fl=fl,
+                ctx1=context_before(flat, fl.global_idx, 1),
+                ctx2=context_before(flat, fl.global_idx, n_ctx_lines),
+                n_words=n_words,
             )
+            for spec in LINE_CARD_SPECS:
+                add_note(spec, line_ctx)
 
-            # 2. Line Completion: front = 1 line before + first N words of this line
-            cue = first_n_words(fl.text, n_words)
-            front_parts = []
-            card_type = "Line Completion"
-            if ctx1:
-                front_parts.append(f'<div class="context">{lines_to_html(ctx1)}</div>')
-            else:
-                front_parts.append(f'<div class="context">[{card_type}]<br>[{BEGINNING_MARKER}]</div>')
-            front_parts.append(f"<div>{esc(cue)} …</div>")
-            add_note(
-                card_type,
-                "".join(front_parts),
-                esc(fl.text),
-                ("line-completion", fl.global_idx),
-            )
-
-            # 3. Full Line: front = 2 lines before, back = full line
-            card_type = "Full Line"
-            add_note(
-                card_type,
-                lines_to_html(ctx2),
-                esc(fl.text),
-                ("full-line", fl.global_idx),
-            )
-
-        # --- Now that every line in this stanza has been emitted, add the
-        #     stanza-level cards for this stanza before moving on. ---
-        card_type = "Stanza Completion"
         stanza_start_global = stanza_lines[0].global_idx
-        line_before = context_before(flat, stanza_start_global, 1)
-        two_before = context_before(flat, stanza_start_global, n_ctx_lines)
-        stanza_html = lines_to_html(stanza)
-
-        # 4. Stanza Completion: front = line before stanza + first line of stanza
-        front_parts = []
-        if line_before:
-            front_parts.append(f'<div class="context">{lines_to_html(line_before)}</div>')
-        else:
-            front_parts.append(f'<div class="context"><i>{BEGINNING_MARKER}</i></div>')
-        front_parts.append(f"<br><div>{esc(stanza[0])}</div>...")
-        add_note(
-            card_type,
-            "".join(front_parts),
-            stanza_html,
-            ("stanza-completion", s_idx),
+        stanza_ctx = StanzaContext(
+            s_idx=s_idx,
+            stanza=stanza,
+            line_before=context_before(flat, stanza_start_global, 1),
+            two_before=context_before(flat, stanza_start_global, n_ctx_lines),
         )
+        for spec in STANZA_CARD_SPECS:
+            add_note(spec, stanza_ctx)
 
-        # 5. Full Stanza: front = 2 lines before stanza, back = full stanza
-        card_type = "Full Stanza"
-        add_note(
-            card_type,
-            lines_to_html(two_before) + '<br>...',
-            stanza_html,
-            ("full-stanza", s_idx),
-        )
-
-    # --- Full Poem card (exactly one, added last after every stanza) ---
-    heading = title if title else "this poem"
-    by_line = f" by {author}" if author else ""
-    card_type = "Full Poem"
-    full_text_html = "<br><br>".join(lines_to_html(stanza) for stanza in stanzas)
-    add_note(
-        card_type,
-        f"Recite <b>{esc(heading)}</b>{esc(by_line)} in full.",
-        full_text_html,
-        ("full-poem",),
-    )
+    poem_ctx = PoemContext(stanzas=stanzas, title=title, author=author)
+    for spec in POEM_CARD_SPECS:
+        add_note(spec, poem_ctx)
 
     return notes
 
@@ -303,10 +373,31 @@ def build_notes(stanzas, model, deck_name, title, author, n_words, n_ctx_lines):
 # Main
 # --------------------------------------------------------------------------
 
+DEFAULT_TITLE = "Untitled Poem"
+
+
+def load_config_file(path):
+    """Read run settings from a TOML config file (see config.template.toml)."""
+    with open(path, "rb") as f:
+        data = tomllib.load(f)
+    if not data.get("input"):
+        raise SystemExit(f"Config file '{path}' must specify 'input' (path to the poem text file).")
+    return {
+        "input": data["input"],
+        "title": data.get("title", DEFAULT_TITLE),
+        "author": data.get("author", ""),
+        "deck": data.get("deck"),
+        "output": data.get("output"),
+        "words": data.get("words", 2),
+        "context_lines": data.get("context_lines", 2),
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description="Generate an Anki deck from a poem.")
     parser.add_argument("input", nargs="?", help="Path to a text file with the poem. Omit to read from stdin.")
-    parser.add_argument("--title", default="Untitled Poem", help="Poem title (used in deck/card content).")
+    parser.add_argument("--config", default=None, help="Path to a TOML config file (see config.template.toml). When given, settings are read from the file and all options below are ignored.")
+    parser.add_argument("--title", default=DEFAULT_TITLE, help="Poem title (used in deck/card content).")
     parser.add_argument("--author", default="", help="Poem author (optional).")
     parser.add_argument("--deck", default=None, help="Anki deck name, e.g. 'Latin::Poetry::Aeneid'. Defaults to the title.")
     parser.add_argument("--output", default=None, help="Output .apkg path. Defaults to a slug of the title.")
@@ -314,31 +405,44 @@ def main():
     parser.add_argument("--context-lines", type=int, default=2, help="Number of lines of preceding context (default: 2).")
     args = parser.parse_args()
 
-    if args.input:
-        with open(args.input, "r", encoding="utf-8") as f:
+    if args.config:
+        cfg = load_config_file(args.config)
+        with open(cfg["input"], "r", encoding="utf-8") as f:
             raw_text = f.read()
     else:
-        if sys.stdin.isatty():
-            parser.error("Provide an input file path or pipe poem text via stdin.")
-        raw_text = sys.stdin.read()
+        cfg = {
+            "title": args.title,
+            "author": args.author,
+            "deck": args.deck,
+            "output": args.output,
+            "words": args.words,
+            "context_lines": args.context_lines,
+        }
+        if args.input:
+            with open(args.input, "r", encoding="utf-8") as f:
+                raw_text = f.read()
+        else:
+            if sys.stdin.isatty():
+                parser.error("Provide an input file path or pipe poem text via stdin.")
+            raw_text = sys.stdin.read()
 
     stanzas = parse_poem(raw_text)
 
-    deck_name = args.deck or args.title
+    deck_name = cfg["deck"] or cfg["title"]
     deck_id = random.Random(deck_name).randrange(1 << 30, 1 << 31)
     deck = genanki.Deck(deck_id, deck_name)
 
     model = make_model()
     notes = build_notes(
-        stanzas, model, deck_name, args.title, args.author,
-        n_words=args.words, n_ctx_lines=args.context_lines,
+        stanzas, model, deck_name, cfg["title"], cfg["author"],
+        n_words=cfg["words"], n_ctx_lines=cfg["context_lines"],
     )
     for note in notes:
         deck.add_note(note)
 
-    output_path = args.output
+    output_path = cfg["output"]
     if not output_path:
-        slug = "".join(c if c.isalnum() else "_" for c in args.title).strip("_").lower() or "poem"
+        slug = "".join(c if c.isalnum() else "_" for c in cfg["title"]).strip("_").lower() or "poem"
         output_path = f"{slug}.apkg"
 
     genanki.Package(deck).write_to_file(output_path)
