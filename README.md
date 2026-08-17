@@ -3,6 +3,9 @@
 Turn a poem into an Anki deck (`.apkg`) for memorization, using layered
 recall cards that build up from "what comes next" cues to full recitation.
 
+> **Note:** This project was built mostly with AI assistance (Claude Code).
+> Review the code before relying on it for anything beyond personal use.
+
 ## Setup
 
 Requires [uv](https://docs.astral.sh/uv/). Dependencies are installed
