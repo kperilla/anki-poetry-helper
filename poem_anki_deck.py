@@ -126,6 +126,21 @@ def first_n_words(text, n):
     return snippet + (" …" if len(words) > n else "")
 
 
+def masked_line_html(text, keep_parity):
+    """Render text with every other word blanked out.
+
+    keep_parity: "odd" keeps the 1st, 3rd, ... words visible and blanks the
+    rest; "even" keeps the 2nd, 4th, ... words visible and blanks the rest.
+    """
+    words = text.split()
+    parts = []
+    for i, word in enumerate(words):
+        word_num = i + 1
+        visible = (word_num % 2 == 1) if keep_parity == "odd" else (word_num % 2 == 0)
+        parts.append(esc(word) if visible else '<span class="blank">___</span>')
+    return " ".join(parts)
+
+
 # --------------------------------------------------------------------------
 # Anki model / deck construction
 # --------------------------------------------------------------------------
@@ -152,6 +167,10 @@ CARD_CSS = """
 .context {
     color: #666;
     font-style: italic;
+}
+.blank {
+    color: #bbb;
+    letter-spacing: 2px;
 }
 hr#answer {
     margin-top: 18px;
@@ -242,6 +261,22 @@ def _line_start(ctx: LineContext) -> Tuple[str, str, tuple]:
     )
 
 
+def _make_masked_line_builder(keep_parity: str, guid_prefix: str) -> CardBuilder:
+    """front = context before + line with every other word blanked, back = full line."""
+    def build(ctx: LineContext) -> Tuple[str, str, tuple]:
+        if ctx.ctx2:
+            front = f'<div class="context">{lines_to_html(ctx.ctx2)}</div>'
+        else:
+            front = f'<div class="context"><i>{BEGINNING_MARKER}</i></div>'
+        front += f"<div>{masked_line_html(ctx.fl.text, keep_parity)}</div>"
+        return (
+            front,
+            esc(ctx.fl.text),
+            (guid_prefix, ctx.fl.global_idx),
+        )
+    return build
+
+
 def _line_completion(ctx: LineContext) -> Tuple[str, str, tuple]:
     """front = 1 line before + first N words of this line, back = full line."""
     cue = first_n_words(ctx.fl.text, ctx.n_words)
@@ -269,6 +304,8 @@ def _full_line(ctx: LineContext) -> Tuple[str, str, tuple]:
 
 LINE_CARD_SPECS = [
     CardSpec("Line Start", _line_start),
+    CardSpec("Line Odd Words", _make_masked_line_builder("odd", "line-odd-words")),
+    CardSpec("Line Even Words", _make_masked_line_builder("even", "line-even-words")),
     CardSpec("Line Completion", _line_completion),
     CardSpec("Full Line", _full_line),
 ]
@@ -393,7 +430,7 @@ def load_config_file(path):
     }
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description="Generate an Anki deck from a poem.")
     parser.add_argument("input", nargs="?", help="Path to a text file with the poem. Omit to read from stdin.")
     parser.add_argument("--config", default=None, help="Path to a TOML config file (see config.template.toml). When given, settings are read from the file and all options below are ignored.")
@@ -403,7 +440,7 @@ def main():
     parser.add_argument("--output", default=None, help="Output .apkg path. Defaults to a slug of the title.")
     parser.add_argument("--words", type=int, default=2, help="Number of leading words used as a cue (default: 2).")
     parser.add_argument("--context-lines", type=int, default=2, help="Number of lines of preceding context (default: 2).")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     if args.config:
         cfg = load_config_file(args.config)
