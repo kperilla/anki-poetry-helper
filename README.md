@@ -72,8 +72,10 @@ Each poem produces several layers of recall cards, from short cues up to
 full recitation:
 
 1. **Line Start** — front: 2 lines before; back: first N words of the next line
-2. **Line Completion** — front: 1 line before + first N words of the current line; back: full current line
-3. **Full Line** — front: 2 lines before; back: full current line
-4. **Stanza Completion** — front: line before the stanza + first line of the stanza; back: full stanza
-5. **Full Stanza** — front: 2 lines before the stanza; back: full stanza
-6. **Full Poem** — front: "Recite the poem"; back: full poem text (exactly one card)
+2. **Line Odd Words** — front: 2 lines before + the current line with its odd-numbered words visible and even-numbered words blanked; back: full current line
+3. **Line Even Words** — front: 2 lines before + the current line with its even-numbered words visible and odd-numbered words blanked; back: full current line
+4. **Line Completion** — front: 1 line before + first N words of the current line; back: full current line
+5. **Full Line** — front: 2 lines before; back: full current line
+6. **Stanza Completion** — front: line before the stanza + first line of the stanza; back: full stanza
+7. **Full Stanza** — front: 2 lines before the stanza; back: full stanza
+8. **Full Poem** — front: "Recite the poem"; back: full poem text (exactly one card)
