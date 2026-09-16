@@ -71,11 +71,19 @@ inferretque deos Latio...
 Each poem produces several layers of recall cards, from short cues up to
 full recitation:
 
-1. **Line Start** — front: 2 lines before; back: first N words of the next line
-2. **Line Odd Words** — front: 2 lines before + the current line with its odd-numbered words visible and even-numbered words blanked; back: full current line
-3. **Line Even Words** — front: 2 lines before + the current line with its even-numbered words visible and odd-numbered words blanked; back: full current line
-4. **Line Completion** — front: 1 line before + first N words of the current line; back: full current line
-5. **Full Line** — front: 2 lines before; back: full current line
-6. **Stanza Completion** — front: line before the stanza + first line of the stanza; back: full stanza
-7. **Full Stanza** — front: 2 lines before the stanza; back: full stanza
-8. **Full Poem** — front: "Recite the poem"; back: full poem text (exactly one card)
+1. **Quarter Cloze** — front: previous line + the current line with one of its 4 quarters blanked; back: full current line (4 cards per line, only for lines with 4+ words)
+2. **Half Cloze** — front: previous line + the current line with one of its 2 halves blanked; back: full current line (2 cards per line, only for lines with 2+ words)
+3. **Line Start** — front: 2 lines before; back: first N words of the next line
+4. **Line Odd Words** — front: 2 lines before + the current line with its odd-numbered words visible and even-numbered words blanked; back: full current line
+5. **Line Even Words** — front: 2 lines before + the current line with its even-numbered words visible and odd-numbered words blanked; back: full current line
+6. **Line Completion** — front: 1 line before + first N words of the current line; back: full current line
+7. **Full Line** — front: 2 lines before; back: full current line
+8. **Stanza Completion** — front: line before the stanza + first line of the stanza; back: full stanza
+9. **Full Stanza** — front: 2 lines before the stanza; back: full stanza
+10. **Full Poem** — front: "Recite the poem"; back: full poem text (exactly one card)
+
+Within each stanza, cards appear in this order: Quarter Cloze (shuffled),
+Half Cloze (shuffled), Line Start/Odd Words/Even Words (shuffled together),
+Line Completion (shuffled), Full Line (original line order), then the
+stanza cards — before moving to the next stanza. A "Sort" field on every
+note (and matching new-card position) preserves this order in Anki.

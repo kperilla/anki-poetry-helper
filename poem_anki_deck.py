@@ -7,15 +7,25 @@ recall cards that build up from "what comes next" cues to full recitation.
 
 CARD TYPES
 ----------
-1. Line Start        front: 2 lines before          back: first N words of the next line
-2. Line Completion    front: 1 line before + first N words of current line
+1. Quarter Cloze      front: previous line + current line with 1 of 4 quarters
+                       hidden       back: full current line (4 cards/line, lines
+                       with 4+ words only)
+2. Half Cloze         front: previous line + current line with 1 of 2 halves
+                       hidden       back: full current line (2 cards/line, lines
+                       with 2+ words only)
+3. Line Start         front: 2 lines before          back: first N words of the next line
+4. Line Odd Words     front: 2 lines before + current line with even-numbered
+                       words blanked  back: full current line
+5. Line Even Words    front: 2 lines before + current line with odd-numbered
+                       words blanked  back: full current line
+6. Line Completion    front: 1 line before + first N words of current line
                        back: full current line
-3. Full Line          front: 2 lines before          back: full current line
-4. Stanza Completion  front: line before the stanza + first line of the stanza
+7. Full Line          front: 2 lines before          back: full current line
+8. Stanza Completion  front: line before the stanza + first line of the stanza
                        back: full stanza
-5. Full Stanza        front: 2 lines before the stanza
+9. Full Stanza        front: 2 lines before the stanza
                        back: full stanza
-6. Full Poem          front: "Recite the poem"       back: full poem text
+10. Full Poem         front: "Recite the poem"       back: full poem text
                        (exactly one card)
 
 USAGE
@@ -54,7 +64,8 @@ import random
 import sys
 import tomllib
 from dataclasses import dataclass, field
-from typing import Callable, List, Tuple
+from itertools import count
+from typing import Callable, List, Optional, Tuple
 
 import genanki
 
@@ -141,6 +152,30 @@ def masked_line_html(text, keep_parity):
     return " ".join(parts)
 
 
+def split_into_chunks(words, n_chunks):
+    """Split words into n_chunks contiguous, roughly-equal-sized chunks."""
+    base, extra = divmod(len(words), n_chunks)
+    chunks = []
+    start = 0
+    for i in range(n_chunks):
+        size = base + (1 if i < extra else 0)
+        chunks.append(words[start:start + size])
+        start += size
+    return chunks
+
+
+def cloze_line_html(text, n_chunks, hide_idx):
+    """Render text split into n_chunks contiguous chunks, with the hide_idx-th chunk blanked out."""
+    chunks = split_into_chunks(text.split(), n_chunks)
+    parts = []
+    for i, chunk in enumerate(chunks):
+        if i == hide_idx:
+            parts.extend('<span class="blank">___</span>' for _ in chunk)
+        else:
+            parts.extend(esc(word) for word in chunk)
+    return " ".join(parts)
+
+
 # --------------------------------------------------------------------------
 # Anki model / deck construction
 # --------------------------------------------------------------------------
@@ -192,6 +227,7 @@ def make_model():
             {"name": "CardType"},
             {"name": "Front"},
             {"name": "Back"},
+            {"name": "Sort"},
         ],
         templates=[
             {
@@ -202,6 +238,7 @@ def make_model():
             }
         ],
         css=CARD_CSS,
+        sort_field_index=3,
     )
 
 
@@ -242,14 +279,48 @@ class PoemContext:
     author: str
 
 
-# A builder takes its context object and returns (front_html, back_html, guid_key).
-CardBuilder = Callable[[object], Tuple[str, str, tuple]]
+# A builder takes its context object and returns (front_html, back_html, guid_key),
+# or None if this card doesn't apply to that context (e.g. a cloze card that
+# needs more words than the line has).
+CardBuilder = Callable[[object], Optional[Tuple[str, str, tuple]]]
 
 
 @dataclass(frozen=True)
 class CardSpec:
     name: str
     build: CardBuilder
+
+
+def _make_cloze_builder(n_chunks: int, hide_idx: int, guid_prefix: str) -> CardBuilder:
+    """front = previous line + current line with 1 of n_chunks contiguous
+    chunks blanked, back = full line. Declines (returns None) if the line
+    has fewer words than n_chunks, since it can't be split that finely.
+    """
+    def build(ctx: LineContext) -> Optional[Tuple[str, str, tuple]]:
+        if len(ctx.fl.text.split()) < n_chunks:
+            return None
+        if ctx.ctx1:
+            front = f'<div class="context">{lines_to_html(ctx.ctx1)}</div>'
+        else:
+            front = f'<div class="context"><i>{BEGINNING_MARKER}</i></div>'
+        front += f"<div>{cloze_line_html(ctx.fl.text, n_chunks, hide_idx)}</div>"
+        return (
+            front,
+            esc(ctx.fl.text),
+            (guid_prefix, ctx.fl.global_idx, hide_idx),
+        )
+    return build
+
+
+QUARTER_CLOZE_SPECS = [
+    CardSpec("Quarter Cloze", _make_cloze_builder(4, i, "quarter-cloze"))
+    for i in range(4)
+]
+
+HALF_CLOZE_SPECS = [
+    CardSpec("Half Cloze", _make_cloze_builder(2, i, "half-cloze"))
+    for i in range(2)
+]
 
 
 def _line_start(ctx: LineContext) -> Tuple[str, str, tuple]:
@@ -302,11 +373,21 @@ def _full_line(ctx: LineContext) -> Tuple[str, str, tuple]:
     )
 
 
-LINE_CARD_SPECS = [
+# Within a stanza, line-level cards are emitted as a sequence of groups (see
+# build_notes()): each group below is shuffled together across every line in
+# the stanza before being added, except SEQUENTIAL_LINE_CARD_SPECS, which
+# keeps its original line order.
+START_ODD_EVEN_LINE_CARD_SPECS = [
     CardSpec("Line Start", _line_start),
     CardSpec("Line Odd Words", _make_masked_line_builder("odd", "line-odd-words")),
     CardSpec("Line Even Words", _make_masked_line_builder("even", "line-even-words")),
+]
+
+LINE_COMPLETION_CARD_SPECS = [
     CardSpec("Line Completion", _line_completion),
+]
+
+SEQUENTIAL_LINE_CARD_SPECS = [
     CardSpec("Full Line", _full_line),
 ]
 
@@ -361,33 +442,62 @@ POEM_CARD_SPECS = [
 def build_notes(stanzas, model, deck_name, title, author, n_words, n_ctx_lines):
     flat = flatten(stanzas)
     notes = []
+    sort_numbers = count(1)
 
-    def add_note(spec: CardSpec, ctx) -> None:
-        front_html, back_html, guid_key = spec.build(ctx)
-        tags = ["poem-deck", spec.name.lower().replace(" ", "-")]
+    def add_note(name: str, front_html: str, back_html: str, guid_key: tuple) -> None:
+        sort_number = next(sort_numbers)
+        tags = ["poem-deck", name.lower().replace(" ", "-")]
         notes.append(genanki.Note(
             model=model,
-            fields=[spec.name, front_html, back_html],
+            fields=[name, front_html, back_html, str(sort_number)],
             tags=tags,
             guid=stable_guid(deck_name, title, guid_key),
+            due=sort_number,
         ))
 
-    # --- Walk stanza by stanza. Within each stanza: run every line-level
-    #     card builder for each line (in registration order), then every
-    #     stanza-level builder once the stanza's lines are done. Finally run
-    #     the poem-level builders once, after every stanza. ---
+    def emit(spec: CardSpec, ctx) -> None:
+        """Build and add a note, skipping it if the builder declines (returns None)."""
+        result = spec.build(ctx)
+        if result is not None:
+            add_note(spec.name, *result)
+
+    def shuffle_and_emit(specs: List[CardSpec], ctxs: list, seed_label: str) -> None:
+        """Build every spec x ctx note (dropping declined ones), shuffle
+        deterministically, then add in that shuffled order."""
+        built = [(spec, spec.build(ctx)) for ctx in ctxs for spec in specs]
+        built = [(spec, result) for spec, result in built if result is not None]
+        random.Random(f"shuffle:{deck_name}:{title}:{s_idx}:{seed_label}").shuffle(built)
+        for spec, result in built:
+            add_note(spec.name, *result)
+
+    # --- Walk stanza by stanza. Within each stanza, line-level cards are
+    #     emitted as a sequence of groups (see the spec lists above): the
+    #     cloze groups, then Start/Odd/Even, then Completion -- each shuffled
+    #     across every line in the stanza -- followed by Full Line in
+    #     original line order, then the stanza-level cards. Every note's
+    #     "due" (and Sort field) is assigned in this same final order, so
+    #     it's also the order new cards are shown in Anki. Finally, run the
+    #     poem-level builders once, after every stanza. ---
     for s_idx, stanza in enumerate(stanzas):
         stanza_lines = [fl for fl in flat if fl.stanza_idx == s_idx]
-
-        for fl in stanza_lines:
-            line_ctx = LineContext(
+        line_ctxs = [
+            LineContext(
                 fl=fl,
                 ctx1=context_before(flat, fl.global_idx, 1),
                 ctx2=context_before(flat, fl.global_idx, n_ctx_lines),
                 n_words=n_words,
             )
-            for spec in LINE_CARD_SPECS:
-                add_note(spec, line_ctx)
+            for fl in stanza_lines
+        ]
+
+        shuffle_and_emit(QUARTER_CLOZE_SPECS, line_ctxs, "quarter-cloze")
+        shuffle_and_emit(HALF_CLOZE_SPECS, line_ctxs, "half-cloze")
+        shuffle_and_emit(START_ODD_EVEN_LINE_CARD_SPECS, line_ctxs, "start-odd-even")
+        shuffle_and_emit(LINE_COMPLETION_CARD_SPECS, line_ctxs, "line-completion")
+
+        for ctx in line_ctxs:
+            for spec in SEQUENTIAL_LINE_CARD_SPECS:
+                emit(spec, ctx)
 
         stanza_start_global = stanza_lines[0].global_idx
         stanza_ctx = StanzaContext(
@@ -397,11 +507,11 @@ def build_notes(stanzas, model, deck_name, title, author, n_words, n_ctx_lines):
             two_before=context_before(flat, stanza_start_global, n_ctx_lines),
         )
         for spec in STANZA_CARD_SPECS:
-            add_note(spec, stanza_ctx)
+            emit(spec, stanza_ctx)
 
     poem_ctx = PoemContext(stanzas=stanzas, title=title, author=author)
     for spec in POEM_CARD_SPECS:
-        add_note(spec, poem_ctx)
+        emit(spec, poem_ctx)
 
     return notes
 
