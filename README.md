@@ -33,6 +33,8 @@ Available options:
 | `--output`          | Output `.apkg` path                                       | a slug of the title        |
 | `--words`           | Number of leading words used as a memorization cue        | `2`                         |
 | `--context-lines`   | Number of lines of preceding context shown on cards        | `2`                         |
+| `--preset`          | Which card types to include: `normal`, `all`, or `custom` | `normal`                   |
+| `--card-types`      | CardType names to include (only used with `--preset custom`), e.g. `--card-types "Line Start" "Full Poem"` | *(none)* |
 
 Run `uv run python poem_anki_deck.py --help` for the full list.
 
@@ -87,3 +89,23 @@ Half Cloze (shuffled), Line Start/Odd Words/Even Words (shuffled together),
 Line Completion (shuffled), Full Line (original line order), then the
 stanza cards — before moving to the next stanza. A "Sort" field on every
 note (and matching new-card position) preserves this order in Anki.
+
+### Choosing which card types to generate
+
+By default (`--preset normal`) every card type is generated except **Quarter
+Cloze**, since it produces four cards per line and can make the deck very
+large. Two other presets are available:
+
+- `--preset all` — include every card type, including Quarter Cloze.
+- `--preset custom` — include exactly the card types you list with
+  `--card-types` (or `card_types` in a config file). At least one is
+  required. Whichever types you pick still appear in the usual deck order
+  described above — this setting only controls which types are included,
+  not their order.
+
+```sh
+uv run python poem_anki_deck.py ws-sonnet18.txt --title "Sonnet 18" --preset custom --card-types "Line Start" "Line Completion" "Full Line" "Full Poem"
+```
+
+The same options work in a config file — see the `preset` and `card_types`
+fields in [config.template.toml](config.template.toml).

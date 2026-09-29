@@ -439,7 +439,70 @@ POEM_CARD_SPECS = [
 ]
 
 
-def build_notes(stanzas, model, deck_name, title, author, n_words, n_ctx_lines):
+def _unique_card_type_names(*spec_groups):
+    seen = []
+    for group in spec_groups:
+        for spec in group:
+            if spec.name not in seen:
+                seen.append(spec.name)
+    return seen
+
+
+# Every CardType name that can appear in the deck, in a stable (but not
+# necessarily deck-order) sequence, derived from the spec lists above so it
+# can't drift out of sync with them.
+ALL_CARD_TYPES = _unique_card_type_names(
+    QUARTER_CLOZE_SPECS,
+    HALF_CLOZE_SPECS,
+    START_ODD_EVEN_LINE_CARD_SPECS,
+    LINE_COMPLETION_CARD_SPECS,
+    SEQUENTIAL_LINE_CARD_SPECS,
+    STANZA_CARD_SPECS,
+    POEM_CARD_SPECS,
+)
+
+# Named sets of CardTypes to include in the deck; see resolve_card_types().
+CARD_TYPE_PRESETS = {
+    "normal": [t for t in ALL_CARD_TYPES if t != "Quarter Cloze"],
+    "all": list(ALL_CARD_TYPES),
+}
+
+
+def resolve_card_types(preset, card_types):
+    """Validate preset/card_types and return the set of enabled CardType names.
+
+    "card_types" is only consulted (and required) when preset == "custom".
+    """
+    if preset == "custom":
+        if not card_types:
+            raise SystemExit("preset 'custom' requires a non-empty 'card_types' list.")
+        unknown = sorted(set(card_types) - set(ALL_CARD_TYPES))
+        if unknown:
+            raise SystemExit(
+                f"Unknown card type(s) in 'card_types': {', '.join(unknown)}. "
+                f"Valid card types: {', '.join(ALL_CARD_TYPES)}"
+            )
+        return set(card_types)
+    if preset not in CARD_TYPE_PRESETS:
+        raise SystemExit(f"Unknown preset '{preset}'. Valid presets: {', '.join(['normal', 'all', 'custom'])}")
+    return set(CARD_TYPE_PRESETS[preset])
+
+
+def build_notes(stanzas, model, deck_name, title, author, n_words, n_ctx_lines, enabled_card_types=None):
+    """enabled_card_types: set of CardType names to include; None means all types."""
+    enabled = set(ALL_CARD_TYPES) if enabled_card_types is None else enabled_card_types
+
+    def keep(specs):
+        return [spec for spec in specs if spec.name in enabled]
+
+    quarter_cloze_specs = keep(QUARTER_CLOZE_SPECS)
+    half_cloze_specs = keep(HALF_CLOZE_SPECS)
+    start_odd_even_specs = keep(START_ODD_EVEN_LINE_CARD_SPECS)
+    line_completion_specs = keep(LINE_COMPLETION_CARD_SPECS)
+    sequential_line_specs = keep(SEQUENTIAL_LINE_CARD_SPECS)
+    stanza_specs = keep(STANZA_CARD_SPECS)
+    poem_specs = keep(POEM_CARD_SPECS)
+
     flat = flatten(stanzas)
     notes = []
     sort_numbers = count(1)
@@ -490,13 +553,13 @@ def build_notes(stanzas, model, deck_name, title, author, n_words, n_ctx_lines):
             for fl in stanza_lines
         ]
 
-        shuffle_and_emit(QUARTER_CLOZE_SPECS, line_ctxs, "quarter-cloze")
-        shuffle_and_emit(HALF_CLOZE_SPECS, line_ctxs, "half-cloze")
-        shuffle_and_emit(START_ODD_EVEN_LINE_CARD_SPECS, line_ctxs, "start-odd-even")
-        shuffle_and_emit(LINE_COMPLETION_CARD_SPECS, line_ctxs, "line-completion")
+        shuffle_and_emit(quarter_cloze_specs, line_ctxs, "quarter-cloze")
+        shuffle_and_emit(half_cloze_specs, line_ctxs, "half-cloze")
+        shuffle_and_emit(start_odd_even_specs, line_ctxs, "start-odd-even")
+        shuffle_and_emit(line_completion_specs, line_ctxs, "line-completion")
 
         for ctx in line_ctxs:
-            for spec in SEQUENTIAL_LINE_CARD_SPECS:
+            for spec in sequential_line_specs:
                 emit(spec, ctx)
 
         stanza_start_global = stanza_lines[0].global_idx
@@ -506,11 +569,11 @@ def build_notes(stanzas, model, deck_name, title, author, n_words, n_ctx_lines):
             line_before=context_before(flat, stanza_start_global, 1),
             two_before=context_before(flat, stanza_start_global, n_ctx_lines),
         )
-        for spec in STANZA_CARD_SPECS:
+        for spec in stanza_specs:
             emit(spec, stanza_ctx)
 
     poem_ctx = PoemContext(stanzas=stanzas, title=title, author=author)
-    for spec in POEM_CARD_SPECS:
+    for spec in poem_specs:
         emit(spec, poem_ctx)
 
     return notes
@@ -537,6 +600,8 @@ def load_config_file(path):
         "output": data.get("output"),
         "words": data.get("words", 2),
         "context_lines": data.get("context_lines", 2),
+        "preset": data.get("preset", "normal"),
+        "card_types": data.get("card_types"),
     }
 
 
@@ -550,6 +615,8 @@ def main(argv=None):
     parser.add_argument("--output", default=None, help="Output .apkg path. Defaults to a slug of the title.")
     parser.add_argument("--words", type=int, default=2, help="Number of leading words used as a cue (default: 2).")
     parser.add_argument("--context-lines", type=int, default=2, help="Number of lines of preceding context (default: 2).")
+    parser.add_argument("--preset", choices=["normal", "all", "custom"], default="normal", help="Which card types to include: 'normal' (all except Quarter Cloze), 'all', or 'custom' (see --card-types). Default: normal.")
+    parser.add_argument("--card-types", nargs="*", default=None, metavar="CARD_TYPE", help="CardType names to include, e.g. --card-types \"Line Start\" \"Full Poem\". Only used when --preset=custom.")
     args = parser.parse_args(argv)
 
     if args.config:
@@ -564,6 +631,8 @@ def main(argv=None):
             "output": args.output,
             "words": args.words,
             "context_lines": args.context_lines,
+            "preset": args.preset,
+            "card_types": args.card_types,
         }
         if args.input:
             with open(args.input, "r", encoding="utf-8") as f:
@@ -574,6 +643,7 @@ def main(argv=None):
             raw_text = sys.stdin.read()
 
     stanzas = parse_poem(raw_text)
+    enabled_card_types = resolve_card_types(cfg["preset"], cfg["card_types"])
 
     deck_name = cfg["deck"] or cfg["title"]
     deck_id = random.Random(deck_name).randrange(1 << 30, 1 << 31)
@@ -583,6 +653,7 @@ def main(argv=None):
     notes = build_notes(
         stanzas, model, deck_name, cfg["title"], cfg["author"],
         n_words=cfg["words"], n_ctx_lines=cfg["context_lines"],
+        enabled_card_types=enabled_card_types,
     )
     for note in notes:
         deck.add_note(note)

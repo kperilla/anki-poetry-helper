@@ -31,3 +31,16 @@ author = "William Shakespeare"
 
 # Number of lines of preceding context shown on cards. (default: 2)
 # context_lines = 2
+
+# Which card types to include in the deck. One of:
+#   "normal" - every card type except Quarter Cloze (default)
+#   "all"    - every card type
+#   "custom" - exactly the types listed in card_types, below
+# preset = "normal"
+
+# CardType names to include. Only used (and required) when preset = "custom";
+# ignored otherwise. Valid names: Quarter Cloze, Half Cloze, Line Start,
+# Line Odd Words, Line Even Words, Line Completion, Full Line,
+# Stanza Completion, Full Stanza, Full Poem. Cards still appear in the usual
+# deck order -- this only controls which types are included, not their order.
+# card_types = ["Line Start", "Line Completion", "Full Line", "Full Poem"]
