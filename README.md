@@ -35,6 +35,7 @@ Available options:
 | `--context-lines`   | Number of lines of preceding context shown on cards        | `2`                         |
 | `--preset`          | Which card types to include: `normal`, `all`, or `custom` | `normal`                   |
 | `--card-types`      | CardType names to include (only used with `--preset custom`), e.g. `--card-types "Line Start" "Full Poem"` | *(none)* |
+| `--qcloze-density`  | Percentage (0–100) of possible Quarter Cloze cards to include, randomly sampled | `100` |
 
 Run `uv run python poem_anki_deck.py --help` for the full list.
 
@@ -109,3 +110,20 @@ uv run python poem_anki_deck.py ws-sonnet18.txt --title "Sonnet 18" --preset cus
 
 The same options work in a config file — see the `preset` and `card_types`
 fields in [config.template.toml](config.template.toml).
+
+### Thinning out Quarter Cloze cards
+
+If you want some Quarter Cloze practice without four cards for every line,
+set `--qcloze-density` (or `qcloze_density` in a config file) to a number
+from 0 to 100. That percentage of all possible Quarter Cloze cards is kept,
+chosen as a random sample across the whole poem so every line has an equal
+chance of being included: `0` keeps none, `100` (the default) keeps all, and
+`50` keeps a random half. The sample is the same on every run for a given
+deck name and title, so regenerating a deck doesn't swap cards around.
+
+This only affects decks that include Quarter Cloze (`--preset all`, or
+`--preset custom` with `"Quarter Cloze"` listed).
+
+```sh
+uv run python poem_anki_deck.py ws-sonnet18.txt --title "Sonnet 18" --preset all --qcloze-density 50
+```

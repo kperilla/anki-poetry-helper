@@ -44,3 +44,11 @@ author = "William Shakespeare"
 # Stanza Completion, Full Stanza, Full Poem. Cards still appear in the usual
 # deck order -- this only controls which types are included, not their order.
 # card_types = ["Line Start", "Line Completion", "Full Line", "Full Poem"]
+
+# Percentage (0-100) of possible Quarter Cloze cards to include. The kept
+# cards are a random sample across the whole poem, so every line has an equal
+# chance of each of its Quarter Cloze cards being included. 0 includes none,
+# 100 includes all, 50 includes a random half. The sample is the same every
+# time for a given deck name and title. Only matters when Quarter Cloze is
+# enabled by the preset / card_types above. (default: 100)
+# qcloze_density = 50

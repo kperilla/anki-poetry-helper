@@ -488,8 +488,21 @@ def resolve_card_types(preset, card_types):
     return set(CARD_TYPE_PRESETS[preset])
 
 
-def build_notes(stanzas, model, deck_name, title, author, n_words, n_ctx_lines, enabled_card_types=None):
-    """enabled_card_types: set of CardType names to include; None means all types."""
+def validate_qcloze_density(value):
+    """Return value if it's a number in [0, 100], else exit with an error."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 100:
+        raise SystemExit(f"'qcloze_density' must be a number from 0 to 100 (got {value!r}).")
+    return value
+
+
+def build_notes(stanzas, model, deck_name, title, author, n_words, n_ctx_lines, enabled_card_types=None,
+                qcloze_density=100):
+    """enabled_card_types: set of CardType names to include; None means all types.
+
+    qcloze_density: percentage (0-100) of possible Quarter Cloze cards to keep,
+    chosen as a uniform random sample across the whole poem. Deterministic for
+    a given deck name and title.
+    """
     enabled = set(ALL_CARD_TYPES) if enabled_card_types is None else enabled_card_types
 
     def keep(specs):
@@ -506,6 +519,33 @@ def build_notes(stanzas, model, deck_name, title, author, n_words, n_ctx_lines, 
     flat = flatten(stanzas)
     notes = []
     sort_numbers = count(1)
+
+    def make_line_ctx(fl: FlatLine) -> LineContext:
+        return LineContext(
+            fl=fl,
+            ctx1=context_before(flat, fl.global_idx, 1),
+            ctx2=context_before(flat, fl.global_idx, n_ctx_lines),
+            n_words=n_words,
+        )
+
+    # Pick which Quarter Cloze cards survive qcloze_density: gather every
+    # possible card across the whole poem, then keep a uniform random sample.
+    quarter_cloze_candidates = [
+        result[2]
+        for fl in flat
+        for spec in quarter_cloze_specs
+        if (result := spec.build(make_line_ctx(fl))) is not None
+    ]
+    n_keep = round(len(quarter_cloze_candidates) * qcloze_density / 100)
+    kept_quarter_cloze_keys = set(
+        random.Random(f"qcloze-sample:{deck_name}:{title}").sample(quarter_cloze_candidates, n_keep)
+    )
+    quarter_cloze_specs = [
+        CardSpec(spec.name, lambda ctx, build=spec.build: (
+            result if (result := build(ctx)) is not None and result[2] in kept_quarter_cloze_keys else None
+        ))
+        for spec in quarter_cloze_specs
+    ]
 
     def add_note(name: str, front_html: str, back_html: str, guid_key: tuple) -> None:
         sort_number = next(sort_numbers)
@@ -543,15 +583,7 @@ def build_notes(stanzas, model, deck_name, title, author, n_words, n_ctx_lines, 
     #     poem-level builders once, after every stanza. ---
     for s_idx, stanza in enumerate(stanzas):
         stanza_lines = [fl for fl in flat if fl.stanza_idx == s_idx]
-        line_ctxs = [
-            LineContext(
-                fl=fl,
-                ctx1=context_before(flat, fl.global_idx, 1),
-                ctx2=context_before(flat, fl.global_idx, n_ctx_lines),
-                n_words=n_words,
-            )
-            for fl in stanza_lines
-        ]
+        line_ctxs = [make_line_ctx(fl) for fl in stanza_lines]
 
         shuffle_and_emit(quarter_cloze_specs, line_ctxs, "quarter-cloze")
         shuffle_and_emit(half_cloze_specs, line_ctxs, "half-cloze")
@@ -602,6 +634,7 @@ def load_config_file(path):
         "context_lines": data.get("context_lines", 2),
         "preset": data.get("preset", "normal"),
         "card_types": data.get("card_types"),
+        "qcloze_density": data.get("qcloze_density", 100),
     }
 
 
@@ -617,6 +650,7 @@ def main(argv=None):
     parser.add_argument("--context-lines", type=int, default=2, help="Number of lines of preceding context (default: 2).")
     parser.add_argument("--preset", choices=["normal", "all", "custom"], default="normal", help="Which card types to include: 'normal' (all except Quarter Cloze), 'all', or 'custom' (see --card-types). Default: normal.")
     parser.add_argument("--card-types", nargs="*", default=None, metavar="CARD_TYPE", help="CardType names to include, e.g. --card-types \"Line Start\" \"Full Poem\". Only used when --preset=custom.")
+    parser.add_argument("--qcloze-density", type=float, default=100, help="Percentage (0-100) of possible Quarter Cloze cards to include, chosen at random. Only matters when Quarter Cloze is enabled. Default: 100.")
     args = parser.parse_args(argv)
 
     if args.config:
@@ -633,6 +667,7 @@ def main(argv=None):
             "context_lines": args.context_lines,
             "preset": args.preset,
             "card_types": args.card_types,
+            "qcloze_density": args.qcloze_density,
         }
         if args.input:
             with open(args.input, "r", encoding="utf-8") as f:
@@ -644,6 +679,7 @@ def main(argv=None):
 
     stanzas = parse_poem(raw_text)
     enabled_card_types = resolve_card_types(cfg["preset"], cfg["card_types"])
+    qcloze_density = validate_qcloze_density(cfg["qcloze_density"])
 
     deck_name = cfg["deck"] or cfg["title"]
     deck_id = random.Random(deck_name).randrange(1 << 30, 1 << 31)
@@ -654,6 +690,7 @@ def main(argv=None):
         stanzas, model, deck_name, cfg["title"], cfg["author"],
         n_words=cfg["words"], n_ctx_lines=cfg["context_lines"],
         enabled_card_types=enabled_card_types,
+        qcloze_density=qcloze_density,
     )
     for note in notes:
         deck.add_note(note)
